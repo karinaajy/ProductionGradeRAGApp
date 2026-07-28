@@ -20,6 +20,35 @@ inngest_client = inngest.Inngest(
     serializer=inngest.PydanticSerializer()
 )
 
+
+def load_pdf_chunks(pdf_path: str, source_id: str) -> RAGChunkAndSrc:
+    chunks = load_and_chunk_pdf(pdf_path)
+    return RAGChunkAndSrc(chunks=chunks, source_id=source_id)
+
+
+def upsert_chunks(chunks_and_src: RAGChunkAndSrc) -> RAGUpsertResult:
+    chunks = chunks_and_src.chunks
+    source_id = chunks_and_src.source_id
+    store = QdrantStorage()
+
+    all_ids = [str(uuid.uuid5(uuid.NAMESPACE_URL, f"{source_id}:{i}")) for i in range(len(chunks))]
+    already_ingested = store.existing_ids(all_ids)
+
+    new_indices = [i for i in range(len(chunks)) if all_ids[i] not in already_ingested]
+
+    if not new_indices:
+        return RAGUpsertResult(ingested=0)
+
+    new_chunks = [chunks[i] for i in new_indices]
+    new_ids = [all_ids[i] for i in new_indices]
+
+    vecs = embed_texts(new_chunks)
+    payloads = [{"source": source_id, "text": new_chunks[i]} for i in range(len(new_chunks))]
+
+    store.upsert(new_ids, vecs, payloads)
+    return RAGUpsertResult(ingested=len(new_chunks))
+
+
 @inngest_client.create_function(
     fn_id="RAG: Ingest PDF",
     trigger=inngest.TriggerEvent(event="rag/ingest_pdf"),
@@ -33,24 +62,27 @@ inngest_client = inngest.Inngest(
   ),
 )
 async def rag_ingest_pdf(ctx: inngest.Context):
-    def _load(ctx: inngest.Context) -> RAGChunkAndSrc:
-        pdf_path = ctx.event.data["pdf_path"]
-        source_id = ctx.event.data.get("source_id", pdf_path)
-        chunks = load_and_chunk_pdf(pdf_path)
-        return RAGChunkAndSrc(chunks=chunks, source_id=source_id)
+    pdf_path = ctx.event.data["pdf_path"]
+    source_id = ctx.event.data.get("source_id", pdf_path)
 
-    def _upsert(chunks_and_src: RAGChunkAndSrc) -> RAGUpsertResult:
-        chunks = chunks_and_src.chunks
-        source_id = chunks_and_src.source_id
-        vecs = embed_texts(chunks)
-        ids = [str(uuid.uuid5(uuid.NAMESPACE_URL, f"{source_id}:{i}")) for i in range(len(chunks))]
-        payloads = [{"source": source_id, "text": chunks[i]} for i in range(len(chunks))]
-        QdrantStorage().upsert(ids, vecs, payloads)
-        return RAGUpsertResult(ingested=len(chunks))
-
-    chunks_and_src = await ctx.step.run("load-and-chunk", lambda: _load(ctx), output_type=RAGChunkAndSrc)
-    ingested = await ctx.step.run("embed-and-upsert", lambda: _upsert(chunks_and_src), output_type=RAGUpsertResult)
+    chunks_and_src = await ctx.step.run(
+        "load-and-chunk",
+        lambda: load_pdf_chunks(pdf_path, source_id),
+        output_type=RAGChunkAndSrc,
+    )
+    ingested = await ctx.step.run(
+        "embed-and-upsert",
+        lambda: upsert_chunks(chunks_and_src),
+        output_type=RAGUpsertResult,
+    )
     return ingested.model_dump()
+
+
+def search_chunks(question: str, top_k: int = 5) -> RAGSearchResult:
+    query_vec = embed_texts([question])[0]
+    store = QdrantStorage()
+    found = store.search(query_vec, top_k)
+    return RAGSearchResult(contexts=found["contexts"], sources=found["sources"])
 
 
 @inngest_client.create_function(
@@ -58,16 +90,14 @@ async def rag_ingest_pdf(ctx: inngest.Context):
     trigger=inngest.TriggerEvent(event="rag/query_pdf_ai")
 )
 async def rag_query_pdf_ai(ctx: inngest.Context):
-    def _search(question: str, top_k: int = 5) -> RAGSearchResult:
-        query_vec = embed_texts([question])[0]
-        store = QdrantStorage()
-        found = store.search(query_vec, top_k)
-        return RAGSearchResult(contexts=found["contexts"], sources=found["sources"])
-
     question = ctx.event.data["question"]
     top_k = int(ctx.event.data.get("top_k", 5))
 
-    found = await ctx.step.run("embed-and-search", lambda: _search(question, top_k), output_type=RAGSearchResult)
+    found = await ctx.step.run(
+        "embed-and-search",
+        lambda: search_chunks(question, top_k),
+        output_type=RAGSearchResult,
+    )
 
     context_block = "\n\n".join(f"- {c}" for c in found.contexts)
     user_content = (

@@ -12,6 +12,17 @@ class QdrantStorage:
                 vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
             )
 
+    def existing_ids(self, ids: list[str]) -> set[str]:
+        if not ids:
+            return set()
+        records = self.client.retrieve(
+            collection_name=self.collection,
+            ids=ids,
+            with_payload=False,
+            with_vectors=False,
+        )
+        return {str(r.id) for r in records}
+
     def upsert(self, ids, vectors, payloads):
         points = [PointStruct(id=ids[i], vector=vectors[i], payload=payloads[i]) for i in range(len(ids))]
         self.client.upsert(self.collection, points=points)
