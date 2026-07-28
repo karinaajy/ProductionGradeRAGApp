@@ -97,7 +97,3 @@ custom_types.py    Pydantic models for structured step outputs
 The biggest shift for me was realizing that reliability isn't something you bolt on later. It has to be part of how you structure the pipeline from the start. Breaking each stage into a discrete, retryable step changes how you write the code, not just how it behaves when something fails.
 
 I also learned to think about cost and abuse prevention as part of the design, not an afterthought. Rate limiting by document source instead of globally meant one popular file couldn't starve out everyone else's requests, and that's the kind of detail that only shows up once you think past "does it work" and into "does it work when other people are using it too."
-
----
-
-*Inspired by Tech With Tim's Production Grade RAG walkthrough, extended and adapted independently.*
