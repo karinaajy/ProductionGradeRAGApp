@@ -13,10 +13,14 @@ from custom_types import RAQQueryResult, RAGSearchResult, RAGUpsertResult, RAGCh
 
 load_dotenv()
 
+INNGEST_DEV_SERVER_URL = os.getenv("INNGEST_DEV_SERVER_URL", "http://127.0.0.1:8288")
+
 inngest_client = inngest.Inngest(
     app_id="rag_app",
     logger=logging.getLogger("uvicorn"),
     is_production=False,
+    api_base_url=INNGEST_DEV_SERVER_URL,
+    event_api_base_url=INNGEST_DEV_SERVER_URL,
     serializer=inngest.PydanticSerializer()
 )
 

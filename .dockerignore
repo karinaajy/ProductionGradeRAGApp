@@ -1,0 +1,8 @@
+.venv/
+qdrant_storage/
+uploads/
+.git/
+.idea/
+__pycache__/
+*.pyc
+tests/

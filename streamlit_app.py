@@ -12,6 +12,8 @@ load_dotenv()
 
 st.set_page_config(page_title="RAG Ingest PDF", page_icon="📄", layout="centered")
 
+INNGEST_DEV_SERVER_URL = os.getenv("INNGEST_DEV_SERVER_URL", "http://127.0.0.1:8288")
+
 
 def save_uploaded_pdf(file) -> Path:
     uploads_dir = Path("uploads")
@@ -23,7 +25,12 @@ def save_uploaded_pdf(file) -> Path:
 
 
 async def send_rag_ingest_event(pdf_path: Path) -> None:
-    client = inngest.Inngest(app_id="rag_app", is_production=False)
+    client = inngest.Inngest(
+        app_id="rag_app",
+        is_production=False,
+        api_base_url=INNGEST_DEV_SERVER_URL,
+        event_api_base_url=INNGEST_DEV_SERVER_URL,
+    )
     await client.send(
         inngest.Event(
             name="rag/ingest_pdf",
@@ -38,22 +45,31 @@ async def send_rag_ingest_event(pdf_path: Path) -> None:
 st.title("Upload a PDF to Ingest")
 uploaded = st.file_uploader("Choose a PDF", type=["pdf"], accept_multiple_files=False)
 
-if uploaded is not None:
+if "ingested_files" not in st.session_state:
+    st.session_state.ingested_files = set()
+
+if uploaded is not None and uploaded.name not in st.session_state.ingested_files:
     with st.spinner("Uploading and triggering ingestion..."):
         path = save_uploaded_pdf(uploaded)
-        # Kick off the event and block until the send completes
         asyncio.run(send_rag_ingest_event(path))
-        # Small pause for user feedback continuity
         time.sleep(0.3)
+    st.session_state.ingested_files.add(uploaded.name)
     st.success(f"Triggered ingestion for: {path.name}")
     st.caption("You can upload another PDF if you like.")
+elif uploaded is not None and uploaded.name in st.session_state.ingested_files:
+    st.info(f"{uploaded.name} was already ingested this session.")
 
 st.divider()
 st.title("Ask a question about your PDFs")
 
 
 async def send_rag_query_event(question: str, top_k: int) -> None:
-    client = inngest.Inngest(app_id="rag_app", is_production=False)
+    client = inngest.Inngest(
+        app_id="rag_app",
+        is_production=False,
+        api_base_url=INNGEST_DEV_SERVER_URL,
+        event_api_base_url=INNGEST_DEV_SERVER_URL,
+    )
     result = await client.send(
         inngest.Event(
             name="rag/query_pdf_ai",
@@ -68,8 +84,7 @@ async def send_rag_query_event(question: str, top_k: int) -> None:
 
 
 def _inngest_api_base() -> str:
-    # Local dev server default; configurable via env
-    return os.getenv("INNGEST_API_BASE", "http://127.0.0.1:8288/v1")
+    return os.getenv("INNGEST_API_BASE", f"{INNGEST_DEV_SERVER_URL}/v1")
 
 
 def fetch_runs(event_id: str) -> list[dict]:
@@ -105,9 +120,7 @@ with st.form("rag_query_form"):
 
     if submitted and question.strip():
         with st.spinner("Sending event and generating answer..."):
-            # Fire-and-forget event to Inngest for observability/workflow
             event_id = asyncio.run(send_rag_query_event(question.strip(), int(top_k)))
-            # Poll the local Inngest API for the run's output
             output = wait_for_run_output(event_id)
             answer = output.get("answer", "")
             sources = output.get("sources", [])
