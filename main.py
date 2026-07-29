@@ -1,5 +1,7 @@
 import logging
+import threading
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 import inngest
 import inngest.fast_api
 from inngest.experimental import ai
@@ -14,15 +16,21 @@ from custom_types import RAQQueryResult, RAGSearchResult, RAGUpsertResult, RAGCh
 load_dotenv()
 
 INNGEST_DEV_SERVER_URL = os.getenv("INNGEST_DEV_SERVER_URL", "http://127.0.0.1:8288")
+INNGEST_ENV = os.getenv("INNGEST_ENV")
 
 inngest_client = inngest.Inngest(
     app_id="rag_app",
     logger=logging.getLogger("uvicorn"),
-    is_production=False,
-    api_base_url=INNGEST_DEV_SERVER_URL,
-    event_api_base_url=INNGEST_DEV_SERVER_URL,
+    is_production=INNGEST_ENV == "production",
+    event_key=os.getenv("INNGEST_EVENT_KEY"),
+    signing_key=os.getenv("INNGEST_SIGNING_KEY"),
+    api_base_url=INNGEST_DEV_SERVER_URL if INNGEST_ENV != "production" else None,
+    event_api_base_url=INNGEST_DEV_SERVER_URL if INNGEST_ENV != "production" else None,
     serializer=inngest.PydanticSerializer()
 )
+
+_results_store: dict[str, dict] = {}
+_results_lock = threading.Lock()
 
 
 def load_pdf_chunks(pdf_path: str, source_id: str) -> RAGChunkAndSrc:
@@ -130,8 +138,23 @@ async def rag_query_pdf_ai(ctx: inngest.Context):
     )
 
     answer = res["choices"][0]["message"]["content"].strip()
-    return {"answer": answer, "sources": found.sources, "num_contexts": len(found.contexts)}
+    result = {"answer": answer, "sources": found.sources, "num_contexts": len(found.contexts)}
+
+    with _results_lock:
+        _results_store[ctx.event.id] = result
+
+    return result
 
 app = FastAPI()
+
+
+@app.get("/results/{event_id}")
+async def get_result(event_id: str):
+    with _results_lock:
+        result = _results_store.get(event_id)
+    if result is None:
+        return JSONResponse(status_code=202, content={"status": "pending"})
+    return {"status": "completed", "output": result}
+
 
 inngest.fast_api.serve(app, inngest_client, [rag_ingest_pdf, rag_query_pdf_ai])

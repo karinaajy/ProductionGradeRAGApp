@@ -13,6 +13,24 @@ load_dotenv()
 st.set_page_config(page_title="RAG Ingest PDF", page_icon="📄", layout="centered")
 
 INNGEST_DEV_SERVER_URL = os.getenv("INNGEST_DEV_SERVER_URL", "http://127.0.0.1:8288")
+INNGEST_ENV = os.getenv("INNGEST_ENV")
+BACKEND_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
+
+
+def _inngest_client() -> inngest.Inngest:
+    if INNGEST_ENV == "production":
+        return inngest.Inngest(
+            app_id="rag_app",
+            is_production=True,
+            event_key=os.getenv("INNGEST_EVENT_KEY"),
+            signing_key=os.getenv("INNGEST_SIGNING_KEY"),
+        )
+    return inngest.Inngest(
+        app_id="rag_app",
+        is_production=False,
+        api_base_url=INNGEST_DEV_SERVER_URL,
+        event_api_base_url=INNGEST_DEV_SERVER_URL,
+    )
 
 
 def save_uploaded_pdf(file) -> Path:
@@ -25,12 +43,7 @@ def save_uploaded_pdf(file) -> Path:
 
 
 async def send_rag_ingest_event(pdf_path: Path) -> None:
-    client = inngest.Inngest(
-        app_id="rag_app",
-        is_production=False,
-        api_base_url=INNGEST_DEV_SERVER_URL,
-        event_api_base_url=INNGEST_DEV_SERVER_URL,
-    )
+    client = _inngest_client()
     await client.send(
         inngest.Event(
             name="rag/ingest_pdf",
@@ -64,12 +77,7 @@ st.title("Ask a question about your PDFs")
 
 
 async def send_rag_query_event(question: str, top_k: int) -> None:
-    client = inngest.Inngest(
-        app_id="rag_app",
-        is_production=False,
-        api_base_url=INNGEST_DEV_SERVER_URL,
-        event_api_base_url=INNGEST_DEV_SERVER_URL,
-    )
+    client = _inngest_client()
     result = await client.send(
         inngest.Event(
             name="rag/query_pdf_ai",
@@ -99,15 +107,22 @@ def wait_for_run_output(event_id: str, timeout_s: float = 120.0, poll_interval_s
     start = time.time()
     last_status = None
     while True:
-        runs = fetch_runs(event_id)
-        if runs:
-            run = runs[0]
-            status = run.get("status")
-            last_status = status or last_status
-            if status in ("Completed", "Succeeded", "Success", "Finished"):
-                return run.get("output") or {}
-            if status in ("Failed", "Cancelled"):
-                raise RuntimeError(f"Function run {status}")
+        if INNGEST_ENV == "production":
+            resp = requests.get(f"{BACKEND_URL}/results/{event_id}")
+            if resp.status_code == 200:
+                return resp.json().get("output", {})
+            last_status = "Pending"
+        else:
+            runs = fetch_runs(event_id)
+            if runs:
+                run = runs[0]
+                status = run.get("status")
+                last_status = status or last_status
+                if status in ("Completed", "Succeeded", "Success", "Finished"):
+                    return run.get("output") or {}
+                if status in ("Failed", "Cancelled"):
+                    raise RuntimeError(f"Function run {status}")
+
         if time.time() - start > timeout_s:
             raise TimeoutError(f"Timed out waiting for run output (last status: {last_status})")
         time.sleep(poll_interval_s)
